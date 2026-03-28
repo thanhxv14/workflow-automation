@@ -1,0 +1,52 @@
+server:
+  port: 8181
+
+spring:
+  application:
+    name: workflow-camunda-client
+  datasource:
+    url: jdbc:postgresql://localhost:5432/camunda7
+    username: postgres
+    password: 123456
+    driver-class-name: org.postgresql.Driver
+    jpa:
+      hibernate:
+        ddl-auto: update   # create | create-drop | update | validate | none
+      show-sql: true
+      properties:
+        hibernate:
+          format_sql: true
+          dialect: org.hibernate.dialect.PostgreSQLDialect
+    sql:
+      init:
+        mode: always   # nếu muốn chạy schema.sql/data.sql
+
+# ============================================================
+# Camunda External Task Client — kết nối tới Camunda Engine
+# ============================================================
+camunda:
+  bpm:
+    client:
+      base-url: http://localhost:8180/engine-rest   # URL Camunda Engine
+      worker-id: spring-boot-client-worker-1        # ID định danh worker này
+      max-tasks: 10                                 # Số task fetch mỗi lần poll
+      async-response-timeout: 20000                 # Long polling timeout (ms) — 20s
+      lock-duration: 30000                          # Lock task trong 30s khi xử lý
+      disable-auto-fetching: false                  # true = tự quản lý fetch thủ công
+
+      # Basic auth nếu Camunda Engine bật security
+      basic-auth:
+        username: admin
+        password: admin
+
+      # Backoff khi poll thất bại
+      backoff-strategy:
+        initial-delay: 1000   # 1s delay lần đầu
+        max-delay: 30000      # tối đa 30s
+        factor: 2.0           # mỗi lần retry nhân đôi delay
+
+# Logging
+logging:
+  level:
+    org.camunda.bpm.client: INFO
+
