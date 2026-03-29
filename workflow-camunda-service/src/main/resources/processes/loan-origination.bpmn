@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_Ultimate" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.0.0">
+
+  <bpmn:process id="Loan_Origination_Process" name="Quy trình Lending Toàn diện" isExecutable="true">
+
+    <bpmn:subProcess id="SubProcess_Cancel" name="Luồng Hủy ngang (Khách hàng yêu cầu)" triggeredByEvent="true">
+      <bpmn:startEvent id="Event_CancelMsg" name="Tin nhắn Hủy">
+        <bpmn:outgoing>Flow_C1</bpmn:outgoing>
+        <bpmn:messageEventDefinition id="MessageEventDef_1" messageRef="Msg_Cancel" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="Task_Cleanup" name="Dọn dẹp dữ liệu hệ thống" camunda:type="external" camunda:topic="cleanup-loan" />
+      <bpmn:sequenceFlow id="Flow_C1" sourceRef="Event_CancelMsg" targetRef="Task_Cleanup" />
+      <bpmn:endEvent id="Event_Cancelled" name="Hồ sơ đã hủy">
+        <bpmn:incoming>Flow_C2</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_C2" sourceRef="Task_Cleanup" targetRef="Event_Cancelled" />
+    </bpmn:subProcess>
+
+    <bpmn:startEvent id="Start" name="Tiếp nhận hồ sơ">
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:businessRuleTask id="DMN_Risk" name="Đánh giá rủi ro (DMN)" camunda:resultVariable="decision" camunda:decisionRef="loan_approval_decision" camunda:mapDecisionResult="singleEntry">
+    <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:inputParameter name="creditScore">${creditScore}</camunda:inputParameter>
+          <camunda:inputParameter name="monthlyIncome">${monthlyIncome}</camunda:inputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+
+    <bpmn:exclusiveGateway id="Gway_Decision" name="Kết quả?">
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Path_Auto</bpmn:outgoing>
+      <bpmn:outgoing>Path_Manual</bpmn:outgoing>
+      <bpmn:outgoing>Path_Reject</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:userTask id="UserTask_Review" name="Thẩm định viên phê duyệt" camunda:candidateGroups="creditofficers">
+      <bpmn:incoming>Path_Manual</bpmn:incoming>
+      <bpmn:outgoing>Flow_ManualApproved</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:boundaryEvent id="Timer_SLA" name="Quá hạn 24h" attachedToRef="UserTask_Review">
+      <bpmn:outgoing>Flow_Timer</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerEventDef_SLA">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT24H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+
+    <bpmn:exclusiveGateway id="Gway_ApprovedJoin">
+      <bpmn:incoming>Path_Auto</bpmn:incoming>
+      <bpmn:incoming>Flow_ManualApproved</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToFork</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:parallelGateway id="Fork" name="Xử lý song song">
+      <bpmn:incoming>Flow_ToFork</bpmn:incoming>
+      <bpmn:outgoing>Flow_P1</bpmn:outgoing>
+      <bpmn:outgoing>Flow_P2</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <bpmn:serviceTask id="Task_Contract" name="Tạo hợp đồng tín dụng" camunda:type="external" camunda:topic="create-contract">
+      <bpmn:incoming>Flow_P1</bpmn:incoming>
+      <bpmn:outgoing>Flow_R1</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:sequenceFlow id="Flow_Compensate"
+                   sourceRef="Task_Contract"
+                   targetRef="ThrowCompensation" />
+
+<bpmn:intermediateThrowEvent id="ThrowCompensation">
+  <bpmn:incoming>Flow_Compensate</bpmn:incoming>
+  <bpmn:compensateEventDefinition />
+</bpmn:intermediateThrowEvent>
+
+    <bpmn:boundaryEvent id="Comp_Boundary" name="Lỗi bù trừ" attachedToRef="Task_Contract">
+      <bpmn:compensateEventDefinition id="CompEventDef_1" />
+    </bpmn:boundaryEvent>
+
+    <bpmn:serviceTask id="Task_UndoContract" name="Hủy hợp đồng (Undo)" isForCompensation="true" camunda:type="external" camunda:topic="undo-contract" />
+
+    <bpmn:serviceTask id="Task_Account" name="Mở tài khoản Core" camunda:type="external" camunda:topic="open-account">
+      <bpmn:incoming>Flow_P2</bpmn:incoming>
+      <bpmn:outgoing>Flow_R2</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:parallelGateway id="Join" name="Gộp luồng" camunda:asyncBefore="true">
+      <bpmn:incoming>Flow_R1</bpmn:incoming>
+      <bpmn:incoming>Flow_R2</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToDisburse</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <bpmn:serviceTask id="Task_Disburse" name="Giải ngân khoản vay" camunda:type="external" camunda:topic="fund-disbursement">
+      <bpmn:incoming>Flow_ToDisburse</bpmn:incoming>
+      <bpmn:outgoing>Flow_FinalSuccess</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End" name="Hoàn tất">
+      <bpmn:incoming>Flow_FinalSuccess</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:serviceTask id="Task_RejectNotify" name="Gửi thông báo Từ chối" camunda:type="external" camunda:topic="send-notification">
+      <bpmn:incoming>Path_Reject</bpmn:incoming>
+      <bpmn:incoming>Flow_Timer</bpmn:incoming>
+      <bpmn:outgoing>Flow_RejectNotify_End</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_Reject" name="Từ chối / Quá hạn">
+      <bpmn:incoming>Flow_RejectNotify_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="Start" targetRef="DMN_Risk" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="DMN_Risk" targetRef="Gway_Decision" />
+    <bpmn:sequenceFlow id="Path_Auto" name="Auto" sourceRef="Gway_Decision" targetRef="Gway_ApprovedJoin">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${decision == 'AUTO_APPROVE'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Path_Manual" name="Manual" sourceRef="Gway_Decision" targetRef="UserTask_Review">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${decision == 'MANUAL_REVIEW'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Path_Reject" name="Reject" sourceRef="Gway_Decision" targetRef="Task_RejectNotify">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${decision == 'REJECT'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ManualApproved" sourceRef="UserTask_Review" targetRef="Gway_ApprovedJoin" />
+    <bpmn:sequenceFlow id="Flow_Timer" sourceRef="Timer_SLA" targetRef="Task_RejectNotify" />
+    <bpmn:sequenceFlow id="Flow_RejectNotify_End" sourceRef="Task_RejectNotify" targetRef="End_Reject" />
+
+    <bpmn:sequenceFlow id="Flow_ToFork" sourceRef="Gway_ApprovedJoin" targetRef="Fork" />
+    <bpmn:sequenceFlow id="Flow_P1" sourceRef="Fork" targetRef="Task_Contract" />
+    <bpmn:sequenceFlow id="Flow_P2" sourceRef="Fork" targetRef="Task_Account" />
+    <bpmn:sequenceFlow id="Flow_R1" sourceRef="Task_Contract" targetRef="Join" />
+    <bpmn:sequenceFlow id="Flow_R2" sourceRef="Task_Account" targetRef="Join" />
+    <bpmn:sequenceFlow id="Flow_ToDisburse" sourceRef="Join" targetRef="Task_Disburse" />
+    <bpmn:sequenceFlow id="Flow_FinalSuccess" sourceRef="Task_Disburse" targetRef="End" />
+    <bpmn:association id="Association_Comp" associationDirection="One" sourceRef="Comp_Boundary" targetRef="Task_UndoContract" />
+
+  </bpmn:process>
+
+  <bpmn:message id="Msg_Cancel" name="msg_cancel_loan" />
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Loan_Origination_Process">
+      <bpmndi:BPMNShape id="Start_di" bpmnElement="Start"><dc:Bounds x="152" y="212" width="36" height="36" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DMN_Risk_di" bpmnElement="DMN_Risk"><dc:Bounds x="240" y="190" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gway_Decision_di" bpmnElement="Gway_Decision" isMarkerVisible="true"><dc:Bounds x="395" y="205" width="50" height="50" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="UserTask_Review_di" bpmnElement="UserTask_Review"><dc:Bounds x="500" y="80" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gway_ApprovedJoin_di" bpmnElement="Gway_ApprovedJoin" isMarkerVisible="true"><dc:Bounds x="655" y="205" width="50" height="50" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Fork_di" bpmnElement="Fork"><dc:Bounds x="765" y="205" width="50" height="50" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Contract_di" bpmnElement="Task_Contract"><dc:Bounds x="870" y="100" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Account_di" bpmnElement="Task_Account"><dc:Bounds x="870" y="300" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Join_di" bpmnElement="Join"><dc:Bounds x="1045" y="205" width="50" height="50" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Disburse_di" bpmnElement="Task_Disburse"><dc:Bounds x="1160" y="190" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_di" bpmnElement="End"><dc:Bounds x="1332" y="212" width="36" height="36" /></bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="Task_RejectNotify_di" bpmnElement="Task_RejectNotify"><dc:Bounds x="500" y="340" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Reject_di" bpmnElement="End_Reject"><dc:Bounds x="662" y="362" width="36" height="36" /></bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="Task_UndoContract_di" bpmnElement="Task_UndoContract"><dc:Bounds x="970" y="10" width="100" height="80" /></bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="Comp_Boundary_di" bpmnElement="Comp_Boundary">
+        <dc:Bounds x="922" y="162" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="Timer_SLA_di" bpmnElement="Timer_SLA">
+        <dc:Bounds x="542" y="142" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="SubProcess_Cancel_di" bpmnElement="SubProcess_Cancel" isExpanded="true"><dc:Bounds x="160" y="470" width="350" height="160" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_CancelMsg_di" bpmnElement="Event_CancelMsg"><dc:Bounds x="192" y="532" width="36" height="36" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Cleanup_di" bpmnElement="Task_Cleanup"><dc:Bounds x="280" y="510" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Cancelled_di" bpmnElement="Event_Cancelled"><dc:Bounds x="442" y="532" width="36" height="36" /></bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Association_Comp_di" bpmnElement="Association_Comp">
+        <di:waypoint x="940" y="162" />
+        <di:waypoint x="940" y="50" />
+        <di:waypoint x="970" y="50" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1"><di:waypoint x="188" y="230" /><di:waypoint x="240" y="230" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_2_di" bpmnElement="Flow_2"><di:waypoint x="340" y="230" /><di:waypoint x="395" y="230" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Path_Auto_di" bpmnElement="Path_Auto"><di:waypoint x="445" y="230" /><di:waypoint x="655" y="230" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Path_Manual_di" bpmnElement="Path_Manual"><di:waypoint x="420" y="205" /><di:waypoint x="420" y="120" /><di:waypoint x="500" y="120" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Path_Reject_di" bpmnElement="Path_Reject"><di:waypoint x="420" y="255" /><di:waypoint x="420" y="380" /><di:waypoint x="500" y="380" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ManualApproved_di" bpmnElement="Flow_ManualApproved"><di:waypoint x="600" y="120" /><di:waypoint x="680" y="120" /><di:waypoint x="680" y="205" /></bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Timer_di" bpmnElement="Flow_Timer"><di:waypoint x="560" y="178" /><di:waypoint x="560" y="340" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RejectNotify_End_di" bpmnElement="Flow_RejectNotify_End"><di:waypoint x="600" y="380" /><di:waypoint x="662" y="380" /></bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_ToFork_di" bpmnElement="Flow_ToFork"><di:waypoint x="705" y="230" /><di:waypoint x="765" y="230" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P1_di" bpmnElement="Flow_P1"><di:waypoint x="790" y="205" /><di:waypoint x="790" y="140" /><di:waypoint x="870" y="140" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P2_di" bpmnElement="Flow_P2"><di:waypoint x="790" y="255" /><di:waypoint x="790" y="340" /><di:waypoint x="870" y="340" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_R1_di" bpmnElement="Flow_R1"><di:waypoint x="970" y="140" /><di:waypoint x="1070" y="140" /><di:waypoint x="1070" y="205" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_R2_di" bpmnElement="Flow_R2"><di:waypoint x="970" y="340" /><di:waypoint x="1070" y="340" /><di:waypoint x="1070" y="255" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToDisburse_di" bpmnElement="Flow_ToDisburse"><di:waypoint x="1095" y="230" /><di:waypoint x="1160" y="230" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FinalSuccess_di" bpmnElement="Flow_FinalSuccess"><di:waypoint x="1260" y="230" /><di:waypoint x="1332" y="230" /></bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_C1_di" bpmnElement="Flow_C1"><di:waypoint x="228" y="550" /><di:waypoint x="280" y="550" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_C2_di" bpmnElement="Flow_C2"><di:waypoint x="380" y="550" /><di:waypoint x="442" y="550" /></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

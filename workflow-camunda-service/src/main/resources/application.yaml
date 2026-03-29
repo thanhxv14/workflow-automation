@@ -23,12 +23,6 @@ spring:
 
 camunda:
   bpm:
-    admin-user:
-      id: admin
-      password: admin
-      first-name: Admin
-    filter:
-      create: All Tasks          # Tạo filter mặc định trên Tasklist
     database:
       schema-update: true
     datasource:
@@ -36,7 +30,20 @@ camunda:
       username: postgres
       password: 123456
       driver-class-name: org.postgresql.Driver
+    admin-user:
+      id: admin
+      password: admin
+      first-name: Admin
+    filter:
+      create: All Tasks          # Tạo filter mặc định trên Tasklist
     history-level: audit         # none | activity | audit | full
     auto-deployment-enabled: true  # Tự deploy BPMN trong resources/
     webapp:
       application-path: /camunda # URL truy cập Cockpit/Tasklist
+    generic-properties:
+      properties:
+        historyTimeToLive: P90D     # History time to live for batch operations (default is 30 days)
+        batchOperationHistoryTimeToLive: P90D # History time to live for batch operations (default is 30 days)
+        historyCleanupBatchWindowStartTime: 02:00:00 # Time when cleanup batch job is started (default is 02:00:00)
+        historyCleanupBatchWindowEndTime: 06:00:00   # Time when cleanup batch job is stopped (default is 06:00:00)
+        historyCleanupStrategy: "removalTimeBased" # Strategy for history cleanup (default is "removalTime")
