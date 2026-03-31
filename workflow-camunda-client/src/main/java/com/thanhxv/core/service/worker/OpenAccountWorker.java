@@ -53,19 +53,25 @@ public class OpenAccountWorker extends AbstractExternalTask {
             Map<String, Object> variables = new HashMap<>();
             variables.put(LoanVariables.ACCOUNT_NUMBER, accountNumber);
 
+            if (applicantName.contains("ERR_CORE_BANK")) {
+                throw new RuntimeException("Simulated core banking failure for testing");
+            }
+
             externalTaskService.complete(externalTask, variables);
 
         } catch (Exception e) {
             log.error("[open-account] FAILED | processInstance={} | error={}",
                     externalTask.getProcessInstanceId(), e.getMessage());
 
-            externalTaskService.handleFailure(
-                    externalTask,
-                    "Account opening failed: " + e.getMessage(),
-                    e.getClass().getName(),
-                    2,
-                    5_000L
-            );
+//            externalTaskService.handleFailure(
+//                    externalTask,
+//                    "Account opening failed: " + e.getMessage(),
+//                    e.getClass().getName(),
+//                    2,
+//                    5_000L
+//            );
+
+            externalTaskService.handleBpmnError(externalTask, "ERR_CORE_BANK");
         }
     }
 
