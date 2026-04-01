@@ -9,10 +9,10 @@
         <bpmn:messageEventDefinition id="MessageEventDef_1" messageRef="Msg_Cancel" />
       </bpmn:startEvent>
       <bpmn:serviceTask id="Task_Cleanup" name="Dọn dẹp dữ liệu hệ thống" camunda:type="external" camunda:topic="cleanup-loan" />
-      <bpmn:sequenceFlow id="Flow_C1" sourceRef="Event_CancelMsg" targetRef="Task_Cleanup" />
       <bpmn:endEvent id="Event_Cancelled" name="Hồ sơ đã hủy">
         <bpmn:incoming>Flow_C2</bpmn:incoming>
       </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_C1" sourceRef="Event_CancelMsg" targetRef="Task_Cleanup" />
       <bpmn:sequenceFlow id="Flow_C2" sourceRef="Task_Cleanup" targetRef="Event_Cancelled" />
     </bpmn:subProcess>
     <bpmn:startEvent id="Start" name="Tiếp nhận hồ sơ">
@@ -47,50 +47,8 @@
     <bpmn:exclusiveGateway id="Gway_ApprovedJoin">
       <bpmn:incoming>Path_Auto</bpmn:incoming>
       <bpmn:incoming>Flow_ManualApproved</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToFork</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToSubProcess</bpmn:outgoing>
     </bpmn:exclusiveGateway>
-    <bpmn:parallelGateway id="Fork" name="Xử lý song song">
-      <bpmn:incoming>Flow_ToFork</bpmn:incoming>
-      <bpmn:outgoing>Flow_P1</bpmn:outgoing>
-      <bpmn:outgoing>Flow_P2</bpmn:outgoing>
-    </bpmn:parallelGateway>
-    <bpmn:serviceTask id="Task_Contract" name="Tạo hợp đồng tín dụng" camunda:type="external" camunda:topic="create-contract">
-      <bpmn:incoming>Flow_P1</bpmn:incoming>
-      <bpmn:outgoing>Flow_R1</bpmn:outgoing>
-    </bpmn:serviceTask>
-    <bpmn:boundaryEvent id="Comp_Boundary" name="Lỗi bù trừ" attachedToRef="Task_Contract">
-      <bpmn:extensionElements />
-      <bpmn:compensateEventDefinition id="CompEventDef_1" />
-    </bpmn:boundaryEvent>
-    <bpmn:serviceTask id="Task_UndoContract" name="Hủy hợp đồng (Undo)" isForCompensation="true" camunda:type="external" camunda:topic="undo-contract" />
-    <bpmn:serviceTask id="Task_Account" name="Mở tài khoản Core" camunda:type="external" camunda:topic="open-account">
-      <bpmn:incoming>Flow_P2</bpmn:incoming>
-      <bpmn:outgoing>Flow_R2</bpmn:outgoing>
-    </bpmn:serviceTask>
-    <bpmn:boundaryEvent id="Error_Account" name="Lỗi Core Bank" attachedToRef="Task_Account">
-      <bpmn:outgoing>Flow_ErrorAccount</bpmn:outgoing>
-      <bpmn:errorEventDefinition id="ErrorEventDef_1" errorRef="Error_CoreBank" />
-    </bpmn:boundaryEvent>
-    <bpmn:intermediateThrowEvent id="Event_ThrowComp" name="Kích hoạt Bù trừ">
-      <bpmn:incoming>Flow_ErrorAccount</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToEndError</bpmn:outgoing>
-      <bpmn:compensateEventDefinition id="CompThrowDef_1" />
-    </bpmn:intermediateThrowEvent>
-    <bpmn:endEvent id="End_Error" name="Đóng hồ sơ do lỗi">
-      <bpmn:incoming>Flow_ToEndError</bpmn:incoming>
-    </bpmn:endEvent>
-    <bpmn:parallelGateway id="Join" name="Gộp luồng" camunda:asyncBefore="true">
-      <bpmn:incoming>Flow_R1</bpmn:incoming>
-      <bpmn:incoming>Flow_R2</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToDisburse</bpmn:outgoing>
-    </bpmn:parallelGateway>
-    <bpmn:serviceTask id="Task_Disburse" name="Giải ngân khoản vay" camunda:type="external" camunda:topic="fund-disbursement">
-      <bpmn:incoming>Flow_ToDisburse</bpmn:incoming>
-      <bpmn:outgoing>Flow_FinalSuccess</bpmn:outgoing>
-    </bpmn:serviceTask>
-    <bpmn:endEvent id="End" name="Hoàn tất">
-      <bpmn:incoming>Flow_FinalSuccess</bpmn:incoming>
-    </bpmn:endEvent>
     <bpmn:serviceTask id="Task_RejectNotify" name="Gửi thông báo Từ chối" camunda:type="external" camunda:topic="send-notification">
       <bpmn:incoming>Path_Reject</bpmn:incoming>
       <bpmn:incoming>Flow_Timer</bpmn:incoming>
@@ -99,6 +57,89 @@
     <bpmn:endEvent id="End_Reject" name="Từ chối / Quá hạn">
       <bpmn:incoming>Flow_RejectNotify_End</bpmn:incoming>
     </bpmn:endEvent>
+    <bpmn:subProcess id="SubProcess_LoanExecution" name="Cụm Dịch vụ Đồng thời">
+      <bpmn:incoming>Flow_ToSubProcess</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToDisburse</bpmn:outgoing>
+      <bpmn:startEvent id="Start_Sub">
+        <bpmn:outgoing>Flow_Sub_Fork</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:parallelGateway id="Fork" name="Xử lý song song">
+        <bpmn:incoming>Flow_Sub_Fork</bpmn:incoming>
+        <bpmn:outgoing>Flow_P1</bpmn:outgoing>
+        <bpmn:outgoing>Flow_P2</bpmn:outgoing>
+      </bpmn:parallelGateway>
+
+      <bpmn:serviceTask id="Task_Contract" name="Tạo hợp đồng tín dụng" camunda:type="external" camunda:topic="create-contract">
+        <bpmn:incoming>Flow_P1</bpmn:incoming>
+        <bpmn:outgoing>Flow_R1</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:boundaryEvent id="Comp_Boundary" name="Lỗi bù trừ" attachedToRef="Task_Contract">
+        <bpmn:compensateEventDefinition id="CompEventDef_1" />
+      </bpmn:boundaryEvent>
+      <bpmn:serviceTask id="Task_UndoContract" name="Hủy hợp đồng (Undo)" isForCompensation="true" camunda:type="external" camunda:topic="undo-contract" />
+
+      <bpmn:serviceTask id="Task_Account" name="Mở tài khoản Core" camunda:type="external" camunda:topic="open-account">
+        <bpmn:incoming>Flow_P2</bpmn:incoming>
+        <bpmn:outgoing>Flow_R2</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:boundaryEvent id="Comp_Boundary_Account" name="Lỗi bù trừ Account" attachedToRef="Task_Account">
+        <bpmn:compensateEventDefinition id="CompEventDef_2" />
+      </bpmn:boundaryEvent>
+      <bpmn:serviceTask id="Task_UndoAccount" name="Đóng tài khoản (Undo)" isForCompensation="true" camunda:type="external" camunda:topic="undo-account" />
+
+      <bpmn:parallelGateway id="Join" name="Gộp luồng" camunda:asyncBefore="true">
+        <bpmn:incoming>Flow_R1</bpmn:incoming>
+        <bpmn:incoming>Flow_R2</bpmn:incoming>
+        <bpmn:outgoing>Flow_Sub_Join</bpmn:outgoing>
+      </bpmn:parallelGateway>
+      <bpmn:endEvent id="End_Sub">
+        <bpmn:incoming>Flow_Sub_Join</bpmn:incoming>
+      </bpmn:endEvent>
+
+      <bpmn:subProcess id="EventSubProcess_ErrorHandling" name="Xử lý Lỗi và Điều phối Rollback Nội bộ" triggeredByEvent="true">
+        <bpmn:startEvent id="StartEvent_CatchError" name="Bắt lỗi nghiệp vụ (Bất kỳ)">
+          <bpmn:outgoing>Flow_Evt1</bpmn:outgoing>
+          <bpmn:errorEventDefinition id="ErrorEventDef_Catch" errorRef="Error_CoreBank" />
+        </bpmn:startEvent>
+        <bpmn:intermediateThrowEvent id="Throw_Compensate_All" name="Kích nổ Rollback Toàn Sub-Process">
+          <bpmn:incoming>Flow_Evt1</bpmn:incoming>
+          <bpmn:outgoing>Flow_Evt2</bpmn:outgoing>
+          <bpmn:compensateEventDefinition id="CompThrowDef_All" />
+        </bpmn:intermediateThrowEvent>
+        <bpmn:endEvent id="EndEvent_RethrowError" name="Bắn lỗi ra vỏ ngoài">
+          <bpmn:incoming>Flow_Evt2</bpmn:incoming>
+          <bpmn:errorEventDefinition id="ErrorEventDef_Rethrow" errorRef="Error_CoreBank" />
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_Evt1" sourceRef="StartEvent_CatchError" targetRef="Throw_Compensate_All" />
+        <bpmn:sequenceFlow id="Flow_Evt2" sourceRef="Throw_Compensate_All" targetRef="EndEvent_RethrowError" />
+      </bpmn:subProcess>
+
+      <bpmn:sequenceFlow id="Flow_Sub_Fork" sourceRef="Start_Sub" targetRef="Fork" />
+      <bpmn:sequenceFlow id="Flow_P1" sourceRef="Fork" targetRef="Task_Contract" />
+      <bpmn:sequenceFlow id="Flow_P2" sourceRef="Fork" targetRef="Task_Account" />
+      <bpmn:sequenceFlow id="Flow_R1" sourceRef="Task_Contract" targetRef="Join" />
+      <bpmn:sequenceFlow id="Flow_R2" sourceRef="Task_Account" targetRef="Join" />
+      <bpmn:sequenceFlow id="Flow_Sub_Join" sourceRef="Join" targetRef="End_Sub" />
+
+      <bpmn:association id="Association_Comp" associationDirection="One" sourceRef="Comp_Boundary" targetRef="Task_UndoContract" />
+      <bpmn:association id="Association_Comp_Account" associationDirection="One" sourceRef="Comp_Boundary_Account" targetRef="Task_UndoAccount" />
+    </bpmn:subProcess>
+
+    <bpmn:boundaryEvent id="Error_Scope" name="Bắt lỗi toàn cục" attachedToRef="SubProcess_LoanExecution">
+      <bpmn:outgoing>Flow_ScopeError</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorEventDef_Scope" errorRef="Error_CoreBank" />
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="End_Error" name="Đóng hồ sơ do lỗi">
+      <bpmn:incoming>Flow_ScopeError</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="Task_Disburse" name="Giải ngân khoản vay" camunda:type="external" camunda:topic="fund-disbursement">
+      <bpmn:incoming>Flow_ToDisburse</bpmn:incoming>
+      <bpmn:outgoing>Flow_FinalSuccess</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End" name="Hoàn tất">
+      <bpmn:incoming>Flow_FinalSuccess</bpmn:incoming>
+    </bpmn:endEvent>
+
     <bpmn:sequenceFlow id="Flow_1" sourceRef="Start" targetRef="DMN_Risk" />
     <bpmn:sequenceFlow id="Flow_2" sourceRef="DMN_Risk" targetRef="Gway_Decision" />
     <bpmn:sequenceFlow id="Path_Auto" name="Auto" sourceRef="Gway_Decision" targetRef="Gway_ApprovedJoin">
@@ -113,33 +154,43 @@
     <bpmn:sequenceFlow id="Flow_ManualApproved" sourceRef="UserTask_Review" targetRef="Gway_ApprovedJoin" />
     <bpmn:sequenceFlow id="Flow_Timer" sourceRef="Timer_SLA" targetRef="Task_RejectNotify" />
     <bpmn:sequenceFlow id="Flow_RejectNotify_End" sourceRef="Task_RejectNotify" targetRef="End_Reject" />
-    <bpmn:sequenceFlow id="Flow_ToFork" sourceRef="Gway_ApprovedJoin" targetRef="Fork" />
-    <bpmn:sequenceFlow id="Flow_P1" sourceRef="Fork" targetRef="Task_Contract" />
-    <bpmn:sequenceFlow id="Flow_P2" sourceRef="Fork" targetRef="Task_Account" />
-    <bpmn:sequenceFlow id="Flow_R1" sourceRef="Task_Contract" targetRef="Join" />
-    <bpmn:sequenceFlow id="Flow_R2" sourceRef="Task_Account" targetRef="Join" />
-    <bpmn:sequenceFlow id="Flow_ErrorAccount" sourceRef="Error_Account" targetRef="Event_ThrowComp" />
-    <bpmn:sequenceFlow id="Flow_ToEndError" sourceRef="Event_ThrowComp" targetRef="End_Error" />
-    <bpmn:sequenceFlow id="Flow_ToDisburse" sourceRef="Join" targetRef="Task_Disburse" />
+    <bpmn:sequenceFlow id="Flow_ToSubProcess" sourceRef="Gway_ApprovedJoin" targetRef="SubProcess_LoanExecution" />
+    <bpmn:sequenceFlow id="Flow_ToDisburse" sourceRef="SubProcess_LoanExecution" targetRef="Task_Disburse" />
     <bpmn:sequenceFlow id="Flow_FinalSuccess" sourceRef="Task_Disburse" targetRef="End" />
-    <bpmn:association id="Association_Comp" associationDirection="One" sourceRef="Comp_Boundary" targetRef="Task_UndoContract" />
+    <bpmn:sequenceFlow id="Flow_ScopeError" sourceRef="Error_Scope" targetRef="End_Error" />
   </bpmn:process>
+
   <bpmndi:BPMNDiagram id="BPMNDiagram_1">
     <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Loan_Origination_Process">
+      <bpmndi:BPMNShape id="SubProcess_Cancel_di" bpmnElement="SubProcess_Cancel" isExpanded="true">
+        <dc:Bounds x="160" y="650" width="350" height="160" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_CancelMsg_di" bpmnElement="Event_CancelMsg">
+        <dc:Bounds x="192" y="712" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Cleanup_di" bpmnElement="Task_Cleanup">
+        <dc:Bounds x="280" y="690" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Cancelled_di" bpmnElement="Event_Cancelled">
+        <dc:Bounds x="442" y="712" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_C1_di" bpmnElement="Flow_C1">
+        <di:waypoint x="228" y="730" />
+        <di:waypoint x="280" y="730" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_C2_di" bpmnElement="Flow_C2">
+        <di:waypoint x="380" y="730" />
+        <di:waypoint x="442" y="730" />
+      </bpmndi:BPMNEdge>
+
       <bpmndi:BPMNShape id="Start_di" bpmnElement="Start">
         <dc:Bounds x="152" y="282" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="130" y="318" width="80" height="14" />
-        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="DMN_Risk_di" bpmnElement="DMN_Risk">
         <dc:Bounds x="240" y="260" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gway_Decision_di" bpmnElement="Gway_Decision" isMarkerVisible="true">
         <dc:Bounds x="395" y="275" width="50" height="50" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="398" y="325" width="45" height="14" />
-        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="UserTask_Review_di" bpmnElement="UserTask_Review">
         <dc:Bounds x="500" y="150" width="100" height="80" />
@@ -147,106 +198,123 @@
       <bpmndi:BPMNShape id="Gway_ApprovedJoin_di" bpmnElement="Gway_ApprovedJoin" isMarkerVisible="true">
         <dc:Bounds x="655" y="275" width="50" height="50" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Fork_di" bpmnElement="Fork">
-        <dc:Bounds x="765" y="275" width="50" height="50" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="750" y="325" width="80" height="14" />
-        </bpmndi:BPMNLabel>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Task_Contract_di" bpmnElement="Task_Contract">
-        <dc:Bounds x="870" y="170" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Task_UndoContract_di" bpmnElement="Task_UndoContract">
-        <dc:Bounds x="970" y="80" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Task_Account_di" bpmnElement="Task_Account">
-        <dc:Bounds x="870" y="370" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Event_ThrowComp_di" bpmnElement="Event_ThrowComp">
-        <dc:Bounds x="1000" y="480" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="979" y="523" width="81" height="14" />
-        </bpmndi:BPMNLabel>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="End_Error_di" bpmnElement="End_Error">
-        <dc:Bounds x="1100" y="480" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="1075" y="523" width="87" height="14" />
-        </bpmndi:BPMNLabel>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Join_di" bpmnElement="Join">
-        <dc:Bounds x="1045" y="275" width="50" height="50" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="1045" y="325" width="51" height="14" />
-        </bpmndi:BPMNLabel>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Task_Disburse_di" bpmnElement="Task_Disburse">
-        <dc:Bounds x="1160" y="260" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="End_di" bpmnElement="End">
-        <dc:Bounds x="1332" y="282" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="1329" y="318" width="42" height="14" />
-        </bpmndi:BPMNLabel>
-      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_RejectNotify_di" bpmnElement="Task_RejectNotify">
         <dc:Bounds x="500" y="410" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="End_Reject_di" bpmnElement="End_Reject">
         <dc:Bounds x="662" y="432" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="636" y="468" width="89" height="14" />
-        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="SubProcess_Cancel_di" bpmnElement="SubProcess_Cancel" isExpanded="true">
-        <dc:Bounds x="160" y="540" width="350" height="160" />
+
+      <bpmndi:BPMNShape id="SubProcess_LoanExecution_di" bpmnElement="SubProcess_LoanExecution" isExpanded="true">
+        <dc:Bounds x="750" y="80" width="700" height="520" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Event_CancelMsg_di" bpmnElement="Event_CancelMsg">
-        <dc:Bounds x="192" y="602" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="177" y="638" width="66" height="14" />
-        </bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="Start_Sub_di" bpmnElement="Start_Sub">
+        <dc:Bounds x="780" y="280" width="36" height="36" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Task_Cleanup_di" bpmnElement="Task_Cleanup">
-        <dc:Bounds x="280" y="580" width="100" height="80" />
+      <bpmndi:BPMNShape id="Fork_di" bpmnElement="Fork">
+        <dc:Bounds x="840" y="273" width="50" height="50" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Event_Cancelled_di" bpmnElement="Event_Cancelled">
-        <dc:Bounds x="442" y="602" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="427" y="638" width="66" height="14" />
-        </bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="Task_Contract_di" bpmnElement="Task_Contract">
+        <dc:Bounds x="920" y="140" width="100" height="80" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNEdge id="Flow_C1_di" bpmnElement="Flow_C1">
-        <di:waypoint x="228" y="620" />
-        <di:waypoint x="280" y="620" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_C2_di" bpmnElement="Flow_C2">
-        <di:waypoint x="380" y="620" />
-        <di:waypoint x="442" y="620" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Association_Comp_di" bpmnElement="Association_Comp">
-        <di:waypoint x="940" y="232" />
-        <di:waypoint x="940" y="120" />
-        <di:waypoint x="970" y="120" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNShape id="Error_Account_di" bpmnElement="Error_Account">
-        <dc:Bounds x="922" y="432" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="906" y="475" width="70" height="14" />
-        </bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="Task_UndoContract_di" bpmnElement="Task_UndoContract">
+        <dc:Bounds x="1050" y="110" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Account_di" bpmnElement="Task_Account">
+        <dc:Bounds x="920" y="320" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_UndoAccount_di" bpmnElement="Task_UndoAccount">
+        <dc:Bounds x="1050" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Join_di" bpmnElement="Join">
+        <dc:Bounds x="1150" y="273" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Sub_di" bpmnElement="End_Sub">
+        <dc:Bounds x="1250" y="280" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Comp_Boundary_di" bpmnElement="Comp_Boundary">
-        <dc:Bounds x="922" y="232" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="916" y="268" width="48" height="14" />
-        </bpmndi:BPMNLabel>
+        <dc:Bounds x="970" y="202" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Comp_Boundary_Account_di" bpmnElement="Comp_Boundary_Account">
+        <dc:Bounds x="970" y="382" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="EventSubProcess_ErrorHandling_di" bpmnElement="EventSubProcess_ErrorHandling" isExpanded="true">
+        <dc:Bounds x="800" y="440" width="350" height="130" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_CatchError_di" bpmnElement="StartEvent_CatchError">
+        <dc:Bounds x="840" y="482" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Throw_Compensate_All_di" bpmnElement="Throw_Compensate_All">
+        <dc:Bounds x="940" y="482" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_RethrowError_di" bpmnElement="EndEvent_RethrowError">
+        <dc:Bounds x="1040" y="482" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Evt1_di" bpmnElement="Flow_Evt1">
+        <di:waypoint x="876" y="500" />
+        <di:waypoint x="940" y="500" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Evt2_di" bpmnElement="Flow_Evt2">
+        <di:waypoint x="976" y="500" />
+        <di:waypoint x="1040" y="500" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Sub_Fork_di" bpmnElement="Flow_Sub_Fork">
+        <di:waypoint x="816" y="298" />
+        <di:waypoint x="840" y="298" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P1_di" bpmnElement="Flow_P1">
+        <di:waypoint x="865" y="273" />
+        <di:waypoint x="865" y="180" />
+        <di:waypoint x="920" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P2_di" bpmnElement="Flow_P2">
+        <di:waypoint x="865" y="323" />
+        <di:waypoint x="865" y="360" />
+        <di:waypoint x="920" y="360" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_R1_di" bpmnElement="Flow_R1">
+        <di:waypoint x="1020" y="180" />
+        <di:waypoint x="1175" y="180" />
+        <di:waypoint x="1175" y="273" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_R2_di" bpmnElement="Flow_R2">
+        <di:waypoint x="1020" y="360" />
+        <di:waypoint x="1175" y="360" />
+        <di:waypoint x="1175" y="323" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Sub_Join_di" bpmnElement="Flow_Sub_Join">
+        <di:waypoint x="1200" y="298" />
+        <di:waypoint x="1250" y="298" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_Comp_di" bpmnElement="Association_Comp">
+        <di:waypoint x="988" y="202" />
+        <di:waypoint x="1000" y="150" />
+        <di:waypoint x="1050" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_Comp_Account_di" bpmnElement="Association_Comp_Account">
+        <di:waypoint x="988" y="418" />
+        <di:waypoint x="1000" y="420" />
+        <di:waypoint x="1050" y="420" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNShape id="End_Error_di" bpmnElement="End_Error">
+        <dc:Bounds x="1150" y="622" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Disburse_di" bpmnElement="Task_Disburse">
+        <dc:Bounds x="1500" y="300" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_di" bpmnElement="End">
+        <dc:Bounds x="1650" y="322" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Error_Scope_di" bpmnElement="Error_Scope">
+        <dc:Bounds x="1080" y="582" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Timer_SLA_di" bpmnElement="Timer_SLA">
         <dc:Bounds x="542" y="212" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="528" y="248" width="64" height="14" />
-        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
+
       <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1">
         <di:waypoint x="188" y="300" />
         <di:waypoint x="240" y="300" />
@@ -258,71 +326,21 @@
       <bpmndi:BPMNEdge id="Path_Auto_di" bpmnElement="Path_Auto">
         <di:waypoint x="445" y="300" />
         <di:waypoint x="655" y="300" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="539" y="275" width="23" height="14" />
-        </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Path_Manual_di" bpmnElement="Path_Manual">
         <di:waypoint x="420" y="275" />
         <di:waypoint x="420" y="190" />
         <di:waypoint x="500" y="190" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="417" y="223" width="37" height="14" />
-        </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Path_Reject_di" bpmnElement="Path_Reject">
         <di:waypoint x="420" y="325" />
         <di:waypoint x="420" y="450" />
         <di:waypoint x="500" y="450" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="419" y="378" width="32" height="14" />
-        </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ManualApproved_di" bpmnElement="Flow_ManualApproved">
         <di:waypoint x="600" y="190" />
         <di:waypoint x="680" y="190" />
         <di:waypoint x="680" y="275" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToFork_di" bpmnElement="Flow_ToFork">
-        <di:waypoint x="705" y="300" />
-        <di:waypoint x="765" y="300" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_P1_di" bpmnElement="Flow_P1">
-        <di:waypoint x="790" y="275" />
-        <di:waypoint x="790" y="210" />
-        <di:waypoint x="870" y="210" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_P2_di" bpmnElement="Flow_P2">
-        <di:waypoint x="790" y="325" />
-        <di:waypoint x="790" y="410" />
-        <di:waypoint x="870" y="410" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_R1_di" bpmnElement="Flow_R1">
-        <di:waypoint x="970" y="210" />
-        <di:waypoint x="1070" y="210" />
-        <di:waypoint x="1070" y="275" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_R2_di" bpmnElement="Flow_R2">
-        <di:waypoint x="970" y="410" />
-        <di:waypoint x="1070" y="410" />
-        <di:waypoint x="1070" y="325" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ErrorAccount_di" bpmnElement="Flow_ErrorAccount">
-        <di:waypoint x="940" y="468" />
-        <di:waypoint x="940" y="498" />
-        <di:waypoint x="1000" y="498" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToEndError_di" bpmnElement="Flow_ToEndError">
-        <di:waypoint x="1036" y="498" />
-        <di:waypoint x="1100" y="498" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToDisburse_di" bpmnElement="Flow_ToDisburse">
-        <di:waypoint x="1095" y="300" />
-        <di:waypoint x="1160" y="300" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_FinalSuccess_di" bpmnElement="Flow_FinalSuccess">
-        <di:waypoint x="1260" y="300" />
-        <di:waypoint x="1332" y="300" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Timer_di" bpmnElement="Flow_Timer">
         <di:waypoint x="560" y="248" />
@@ -331,6 +349,23 @@
       <bpmndi:BPMNEdge id="Flow_RejectNotify_End_di" bpmnElement="Flow_RejectNotify_End">
         <di:waypoint x="600" y="450" />
         <di:waypoint x="662" y="450" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToSubProcess_di" bpmnElement="Flow_ToSubProcess">
+        <di:waypoint x="705" y="300" />
+        <di:waypoint x="750" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToDisburse_di" bpmnElement="Flow_ToDisburse">
+        <di:waypoint x="1450" y="340" />
+        <di:waypoint x="1500" y="340" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FinalSuccess_di" bpmnElement="Flow_FinalSuccess">
+        <di:waypoint x="1600" y="340" />
+        <di:waypoint x="1650" y="340" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ScopeError_di" bpmnElement="Flow_ScopeError">
+        <di:waypoint x="1098" y="618" />
+        <di:waypoint x="1098" y="640" />
+        <di:waypoint x="1150" y="640" />
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>

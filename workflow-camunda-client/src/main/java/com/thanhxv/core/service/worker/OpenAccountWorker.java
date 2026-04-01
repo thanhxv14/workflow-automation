@@ -47,15 +47,15 @@ public class OpenAccountWorker extends AbstractExternalTask {
             String accountNumber = generateAccountNumber(applicantId);
             simulateCoreSystemCall("Core Banking API", 700);
 
+            if (applicantName.contains("ERR_CORE_BANK")) {
+                throw new RuntimeException("Simulated core banking failure for testing");
+            }
+
             log.info("[open-account] SUCCESS | accountNumber={} | applicant={}",
                     accountNumber, applicantName);
 
             Map<String, Object> variables = new HashMap<>();
             variables.put(LoanVariables.ACCOUNT_NUMBER, accountNumber);
-
-            if (applicantName.contains("ERR_CORE_BANK")) {
-                throw new RuntimeException("Simulated core banking failure for testing");
-            }
 
             externalTaskService.complete(externalTask, variables);
 
