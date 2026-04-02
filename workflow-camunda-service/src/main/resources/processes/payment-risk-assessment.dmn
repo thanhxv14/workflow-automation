@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" 
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn" 
+             id="Definitions_RiskAssessment" 
+             name="DRD" 
+             namespace="http://camunda.org/schema/1.0/dmn" 
+             exporter="Camunda Modeler" 
+             exporterVersion="5.x">
+  
+  <decision id="payment-risk-assessment" name="Payment Risk Assessment" camunda:historyTimeToLive="90">
+    <decisionTable id="DT_RiskAssessment" hitPolicy="UNIQUE">
+      <input id="Input_Amount" label="Payment Amount (USD)">
+        <inputExpression id="InputExpr_Amount" typeRef="double">
+          <text>amount</text>
+        </inputExpression>
+      </input>
+      <input id="Input_Country" label="Destination Country Risk">
+        <inputExpression id="InputExpr_Country" typeRef="string">
+          <text>destinationCountryRisk</text>
+        </inputExpression>
+        <inputValues>
+          <text>"LOW","MEDIUM","HIGH","CRITICAL"</text>
+        </inputValues>
+      </input>
+      <input id="Input_Velocity" label="Tx Count Last Hour">
+        <inputExpression id="InputExpr_Velocity" typeRef="integer">
+          <text>txCountLastHour</text>
+        </inputExpression>
+      </input>
+      <input id="Input_DeviceTrust" label="Device Trust Score">
+        <inputExpression id="InputExpr_DeviceTrust" typeRef="integer">
+          <text>deviceTrustScore</text>
+        </inputExpression>
+      </input>
+
+      <output id="Output_RiskScore" label="Risk Score" name="riskScore" typeRef="integer"/>
+      <output id="Output_RiskLevel" label="Risk Level" name="riskLevel" typeRef="string"/>
+      <output id="Output_RequiresReview" label="Requires Manual Review" name="requiresManualReview" typeRef="boolean"/>
+      <output id="Output_BlockPayment" label="Block Payment" name="blockPayment" typeRef="boolean"/>
+
+      <rule id="Rule_LowRisk">
+        <inputEntry id="IE_1_1"><text>&lt; 1000</text></inputEntry>
+        <inputEntry id="IE_1_2"><text>"LOW"</text></inputEntry>
+        <inputEntry id="IE_1_3"><text>&lt; 5</text></inputEntry>
+        <inputEntry id="IE_1_4"><text>&gt;= 70</text></inputEntry>
+        <outputEntry id="OE_1_1"><text>15</text></outputEntry>
+        <outputEntry id="OE_1_2"><text>"LOW"</text></outputEntry>
+        <outputEntry id="OE_1_3"><text>false</text></outputEntry>
+        <outputEntry id="OE_1_4"><text>false</text></outputEntry>
+      </rule>
+
+      <rule id="Rule_MediumRisk">
+        <inputEntry id="IE_2_1"><text>[1000..10000]</text></inputEntry>
+        <inputEntry id="IE_2_2"><text>"LOW","MEDIUM"</text></inputEntry>
+        <inputEntry id="IE_2_3"><text>&lt; 10</text></inputEntry>
+        <inputEntry id="IE_2_4"><text>&gt;= 50</text></inputEntry>
+        <outputEntry id="OE_2_1"><text>40</text></outputEntry>
+        <outputEntry id="OE_2_2"><text>"MEDIUM"</text></outputEntry>
+        <outputEntry id="OE_2_3"><text>false</text></outputEntry>
+        <outputEntry id="OE_2_4"><text>false</text></outputEntry>
+      </rule>
+
+      <rule id="Rule_HighAmount">
+        <inputEntry id="IE_3_1"><text>&gt; 10000</text></inputEntry>
+        <inputEntry id="IE_3_2"><text>"LOW","MEDIUM","HIGH"</text></inputEntry>
+        <inputEntry id="IE_3_3"><text></text></inputEntry>
+        <inputEntry id="IE_3_4"><text></text></inputEntry>
+        <outputEntry id="OE_3_1"><text>75</text></outputEntry>
+        <outputEntry id="OE_3_2"><text>"HIGH"</text></outputEntry>
+        <outputEntry id="OE_3_3"><text>true</text></outputEntry>
+        <outputEntry id="OE_3_4"><text>false</text></outputEntry>
+      </rule>
+
+      <rule id="Rule_HighVelocity">
+        <inputEntry id="IE_4_1"><text></text></inputEntry>
+        <inputEntry id="IE_4_2"><text></text></inputEntry>
+        <inputEntry id="IE_4_3"><text>&gt;= 10</text></inputEntry>
+        <inputEntry id="IE_4_4"><text>&lt; 50</text></inputEntry>
+        <outputEntry id="OE_4_1"><text>80</text></outputEntry>
+        <outputEntry id="OE_4_2"><text>"HIGH"</text></outputEntry>
+        <outputEntry id="OE_4_3"><text>true</text></outputEntry>
+        <outputEntry id="OE_4_4"><text>false</text></outputEntry>
+      </rule>
+
+      <rule id="Rule_CriticalCountry">
+        <inputEntry id="IE_5_1"><text></text></inputEntry>
+        <inputEntry id="IE_5_2"><text>"CRITICAL"</text></inputEntry>
+        <inputEntry id="IE_5_3"><text></text></inputEntry>
+        <inputEntry id="IE_5_4"><text></text></inputEntry>
+        <outputEntry id="OE_5_1"><text>100</text></outputEntry>
+        <outputEntry id="OE_5_2"><text>"CRITICAL"</text></outputEntry>
+        <outputEntry id="OE_5_3"><text>false</text></outputEntry>
+        <outputEntry id="OE_5_4"><text>true</text></outputEntry>
+      </rule>
+
+      <rule id="Rule_UntrustedDevice">
+        <inputEntry id="IE_6_1"><text></text></inputEntry>
+        <inputEntry id="IE_6_2"><text></text></inputEntry>
+        <inputEntry id="IE_6_3"><text>&gt;= 20</text></inputEntry>
+        <inputEntry id="IE_6_4"><text>&lt; 30</text></inputEntry>
+        <outputEntry id="OE_6_1"><text>95</text></outputEntry>
+        <outputEntry id="OE_6_2"><text>"CRITICAL"</text></outputEntry>
+        <outputEntry id="OE_6_3"><text>false</text></outputEntry>
+        <outputEntry id="OE_6_4"><text>true</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+</definitions>

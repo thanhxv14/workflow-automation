@@ -1,0 +1,797 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_PaymentProcess" targetNamespace="http://camunda.org/schema/1.0/bpmn" exporter="Camunda Modeler" exporterVersion="5.37.0">
+  <message id="Message_PaymentRequest" name="PaymentRequest" />
+  <message id="Message_GatewayCallback" name="GatewayCallback" />
+  <signal id="Signal_CancelPayment" name="CancelPayment" />
+  <error id="Error_PaymentFailed" name="Payment Failed" errorCode="PAYMENT_FAILED" />
+  <error id="Error_PaymentBlocked" name="Payment Blocked" errorCode="PAYMENT_BLOCKED" />
+  <error id="Error_PaymentRejected" name="Payment Rejected" errorCode="PAYMENT_REJECTED" />
+  <error id="Error_PaymentCancelled" name="Payment Cancelled" errorCode="PAYMENT_CANCELLED" />
+  <error id="Error_InsufficientFunds" name="Insufficient Funds" errorCode="INSUFFICIENT_FUNDS" />
+  <error id="Error_GatewayError" name="Gateway Error" errorCode="GATEWAY_ERROR" />
+  <escalation id="Escalation_AMLAlert" name="AML Alert" escalationCode="AML_ALERT" />
+  <process id="payment-process" name="Payment Processing" isExecutable="true" camunda:historyTimeToLive="90">
+    <extensionElements>
+      <camunda:executionListener class="vn.payment.listeners.ProcessStartListener" event="start" />
+      <camunda:executionListener class="vn.payment.listeners.ProcessEndListener" event="end" />
+    </extensionElements>
+    <startEvent id="StartEvent_PaymentReceived" name="Payment&#10;Received">
+      <extensionElements>
+        <camunda:executionListener class="vn.payment.listeners.AuditLogListener" event="start" />
+      </extensionElements>
+      <messageEventDefinition id="MsgDef_PaymentRequest" messageRef="Message_PaymentRequest" />
+    </startEvent>
+    <sequenceFlow id="Flow_Start_to_Init" sourceRef="StartEvent_PaymentReceived" targetRef="ScriptTask_InitVars" />
+    <scriptTask id="ScriptTask_InitVars" name="Initialize&#10;Variables" scriptFormat="groovy">
+      <script>
+        import java.time.Instant
+        execution.setVariable("processStartTime", Instant.now().toString())
+        execution.setVariable("retryCount", 0)
+        execution.setVariable("compensationRequired", false)
+        execution.setVariable("riskLevel", "UNKNOWN")
+        execution.setVariable("paymentStatus", "INITIATED")
+        def corrKey = execution.getVariable("paymentId") + "-" + System.currentTimeMillis()
+        execution.setVariable("correlationKey", corrKey)
+        "initialized"
+      </script>
+    </scriptTask>
+    <sequenceFlow id="Flow_Init_to_Risk" sourceRef="ScriptTask_InitVars" targetRef="BusinessRuleTask_RiskAssessment" />
+    <businessRuleTask id="BusinessRuleTask_RiskAssessment" name="Assess&#10;Payment Risk" camunda:resultVariable="riskResult" camunda:decisionRef="payment-risk-assessment" camunda:decisionRefBinding="latestVersion" camunda:mapDecisionResult="singleResult">
+      <extensionElements>
+        <camunda:executionListener class="vn.payment.listeners.AuditLogListener" event="end" />
+      </extensionElements>
+    </businessRuleTask>
+    <sequenceFlow id="Flow_Risk_to_UnpackDMN" sourceRef="BusinessRuleTask_RiskAssessment" targetRef="ScriptTask_UnpackRisk" />
+    <scriptTask id="ScriptTask_UnpackRisk" name="Unpack&#10;Risk Result" scriptFormat="groovy">
+      <script>
+        def result = execution.getVariable("riskResult")
+        execution.setVariable("riskScore",            result.get("riskScore"))
+        execution.setVariable("riskLevel",            result.get("riskLevel"))
+        execution.setVariable("requiresManualReview", result.get("requiresManualReview"))
+        execution.setVariable("blockPayment",         result.get("blockPayment"))
+      </script>
+    </scriptTask>
+    <sequenceFlow id="Flow_UnpackRisk_to_GW" sourceRef="ScriptTask_UnpackRisk" targetRef="GW_RiskLevel" />
+    <exclusiveGateway id="GW_RiskLevel" name="Risk Level?" />
+    <sequenceFlow id="Flow_GW_to_Block" name="CRITICAL" sourceRef="GW_RiskLevel" targetRef="ServiceTask_BlockPayment">
+      <conditionExpression xsi:type="tFormalExpression">${blockPayment == true}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="Flow_GW_to_ManualReview" name="HIGH" sourceRef="GW_RiskLevel" targetRef="UserTask_ManualReview">
+      <conditionExpression xsi:type="tFormalExpression">${requiresManualReview == true &amp;&amp; blockPayment == false}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="Flow_GW_to_ReserveBalance" name="LOW / MEDIUM" sourceRef="GW_RiskLevel" targetRef="ServiceTask_ReserveBalance">
+      <conditionExpression xsi:type="tFormalExpression">${requiresManualReview == false &amp;&amp; blockPayment == false}</conditionExpression>
+    </sequenceFlow>
+    <serviceTask id="ServiceTask_BlockPayment" name="Block Payment" camunda:type="external" camunda:topic="block-payment">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R3/PT30S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_Block_to_End" sourceRef="ServiceTask_BlockPayment" targetRef="EndEvent_PaymentBlocked" />
+    <userTask id="UserTask_ManualReview" name="Manual Review" camunda:formKey="embedded:deployment:forms/manual-review.html" camunda:candidateGroups="compliance-team,fraud-analysts" camunda:dueDate="${dateTime().plusHours(4)}" camunda:priority="80">
+      <extensionElements>
+        <camunda:taskListener class="vn.payment.listeners.ManualReviewTaskListener" event="create" />
+        <camunda:taskListener class="vn.payment.listeners.ManualReviewTaskListener" event="complete" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="Flow_ManualReview_to_Reserve" sourceRef="UserTask_ManualReview" targetRef="ServiceTask_ReserveBalance" />
+    <boundaryEvent id="BoundaryEvent_ReviewSLA" name="2h SLA" cancelActivity="false" attachedToRef="UserTask_ManualReview">
+      <timerEventDefinition>
+        <timeDuration>PT2H</timeDuration>
+      </timerEventDefinition>
+    </boundaryEvent>
+    <sequenceFlow id="Flow_SLA_to_Escalate" sourceRef="BoundaryEvent_ReviewSLA" targetRef="ServiceTask_EscalateReview" />
+    <serviceTask id="ServiceTask_EscalateReview" name="Escalate Review" camunda:type="external" camunda:topic="escalate-review">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R2/PT1M</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_Escalate_to_EndEsc" sourceRef="ServiceTask_EscalateReview" targetRef="EndEvent_Escalated" />
+    <boundaryEvent id="BoundaryEvent_ReviewRejected" name="Review Rejected" attachedToRef="UserTask_ManualReview">
+      <errorEventDefinition errorRef="Error_PaymentRejected" />
+    </boundaryEvent>
+    <sequenceFlow id="Flow_Rejected_to_End" sourceRef="BoundaryEvent_ReviewRejected" targetRef="EndEvent_PaymentRejected" />
+    <serviceTask id="ServiceTask_ReserveBalance" name="Reserve Balance" camunda:type="external" camunda:topic="wallet-reserve">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R3/PT10S,PT30S,PT60S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_Reserve_to_ParallelFork" sourceRef="ServiceTask_ReserveBalance" targetRef="GW_ParallelFork" />
+    <boundaryEvent id="BoundaryEvent_CompensateReserve" name="Compensate&#10;Reserve" attachedToRef="ServiceTask_ReserveBalance">
+      <compensateEventDefinition />
+    </boundaryEvent>
+    <serviceTask id="ServiceTask_ReleaseReserve" name="Release Reserve" isForCompensation="true" camunda:type="external" camunda:topic="wallet-release">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R5/PT30S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <boundaryEvent id="BoundaryEvent_ReserveError" name="Insufficient&#10;Funds" attachedToRef="ServiceTask_ReserveBalance">
+      <errorEventDefinition errorRef="Error_InsufficientFunds" />
+    </boundaryEvent>
+    <sequenceFlow id="Flow_ReserveError_to_Notify" sourceRef="BoundaryEvent_ReserveError" targetRef="ServiceTask_NotifyInsufficient" />
+    <serviceTask id="ServiceTask_NotifyInsufficient" name="Notify Insufficient&#10;Funds" camunda:type="external" camunda:topic="notify-insufficient">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R3/PT30S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_NotifyInsufficient_to_End" sourceRef="ServiceTask_NotifyInsufficient" targetRef="EndEvent_InsufficientFunds" />
+    <parallelGateway id="GW_ParallelFork" name="Fork">
+      <outgoing>Flow_0ie3ir4</outgoing>
+    </parallelGateway>
+    <sequenceFlow id="Flow_Fork_to_Charge" sourceRef="GW_ParallelFork" targetRef="ServiceTask_ChargeGateway" />
+    <serviceTask id="ServiceTask_ChargeGateway" name="Charge Payment&#10;Gateway" camunda:type="external" camunda:topic="charge-payment-gateway">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R5/PT5S,PT15S,PT60S,PT300S,PT600S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_Charge_to_Join" sourceRef="ServiceTask_ChargeGateway" targetRef="GW_ParallelJoin" />
+    <boundaryEvent id="BoundaryEvent_CompensateCharge" name="Compensate&#10;Charge" attachedToRef="ServiceTask_ChargeGateway">
+      <compensateEventDefinition />
+    </boundaryEvent>
+    <serviceTask id="ServiceTask_RefundCharge" name="Refund Gateway&#10;Charge" isForCompensation="true" camunda:type="external" camunda:topic="refund-payment-gateway">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R5/PT60S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <boundaryEvent id="BoundaryEvent_GatewayError" name="Gateway Error" attachedToRef="ServiceTask_ChargeGateway">
+      <errorEventDefinition errorRef="Error_GatewayError" />
+    </boundaryEvent>
+    <sequenceFlow id="Flow_GatewayError_to_Compensate" sourceRef="BoundaryEvent_GatewayError" targetRef="IntermediateThrowEvent_Compensate" />
+    <boundaryEvent id="BoundaryEvent_AMLAlert" name="AML Alert" cancelActivity="false" attachedToRef="SubProcess_ServiceTask_AMLCheck">
+      <escalationEventDefinition escalationRef="Escalation_AMLAlert" />
+    </boundaryEvent>
+    <sequenceFlow id="Flow_AMLAlert_to_ComplianceTask" sourceRef="BoundaryEvent_AMLAlert" targetRef="UserTask_ComplianceReview" />
+    <userTask id="UserTask_ComplianceReview" name="Compliance Review&#10;(AML)" camunda:formKey="embedded:deployment:forms/compliance-review.html" camunda:candidateGroups="compliance-team" camunda:dueDate="${dateTime().plusHours(24)}" camunda:priority="100">
+      <extensionElements>
+        <camunda:taskListener class="vn.payment.listeners.ComplianceTaskListener" event="create" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="Flow_ComplianceReview_to_Join" sourceRef="UserTask_ComplianceReview" targetRef="GW_ParallelJoin" />
+    <parallelGateway id="GW_ParallelJoin" name="Join">
+      <incoming>Flow_0c8v0iz</incoming>
+    </parallelGateway>
+    <sequenceFlow id="Flow_Join_to_EventGW" sourceRef="GW_ParallelJoin" targetRef="GW_EventBased" />
+    <eventBasedGateway id="GW_EventBased" name="Await&#10;Confirmation" />
+    <sequenceFlow id="Flow_EventGW_to_Callback" sourceRef="GW_EventBased" targetRef="IntermediateCatchEvent_GatewayCallback" />
+    <sequenceFlow id="Flow_EventGW_to_Timeout" sourceRef="GW_EventBased" targetRef="IntermediateCatchEvent_ConfirmTimeout" />
+    <intermediateCatchEvent id="IntermediateCatchEvent_GatewayCallback" name="Gateway&#10;Callback">
+      <messageEventDefinition messageRef="Message_GatewayCallback" />
+    </intermediateCatchEvent>
+    <sequenceFlow id="Flow_Callback_to_StatusGW" sourceRef="IntermediateCatchEvent_GatewayCallback" targetRef="GW_PaymentStatus" />
+    <intermediateCatchEvent id="IntermediateCatchEvent_ConfirmTimeout" name="15 min&#10;Timeout">
+      <timerEventDefinition>
+        <timeDuration>PT15M</timeDuration>
+      </timerEventDefinition>
+    </intermediateCatchEvent>
+    <sequenceFlow id="Flow_Timeout_to_PendingCheck" sourceRef="IntermediateCatchEvent_ConfirmTimeout" targetRef="ServiceTask_CheckPendingStatus" />
+    <serviceTask id="ServiceTask_CheckPendingStatus" name="Check Pending&#10;Status" camunda:type="external" camunda:topic="check-payment-status">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R3/PT60S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_PendingCheck_to_StatusGW" sourceRef="ServiceTask_CheckPendingStatus" targetRef="GW_PaymentStatus" />
+    <exclusiveGateway id="GW_PaymentStatus" name="Payment&#10;Status?" />
+    <sequenceFlow id="Flow_Status_Success" name="SUCCESS" sourceRef="GW_PaymentStatus" targetRef="ServiceTask_UpdateLedger">
+      <conditionExpression xsi:type="tFormalExpression">${paymentStatus == 'SUCCESS'}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="Flow_Status_Failed" name="FAILED" sourceRef="GW_PaymentStatus" targetRef="IntermediateThrowEvent_Compensate">
+      <conditionExpression xsi:type="tFormalExpression">${paymentStatus == 'FAILED'}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="Flow_Status_Pending" name="PENDING" sourceRef="GW_PaymentStatus" targetRef="UserTask_ManualReconciliation">
+      <conditionExpression xsi:type="tFormalExpression">${paymentStatus == 'PENDING'}</conditionExpression>
+    </sequenceFlow>
+    <userTask id="UserTask_ManualReconciliation" name="Manual&#10;Reconciliation" camunda:formKey="embedded:deployment:forms/reconciliation.html" camunda:candidateGroups="operations-team" camunda:dueDate="${dateTime().plusHours(8)}">
+      <extensionElements>
+        <camunda:taskListener class="vn.payment.listeners.ReconciliationTaskListener" event="create" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="Flow_Reconciliation_to_StatusGW" sourceRef="UserTask_ManualReconciliation" targetRef="GW_PaymentStatus" />
+    <serviceTask id="ServiceTask_UpdateLedger" name="Update Ledger" camunda:type="external" camunda:topic="update-ledger">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R5/PT10S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_Ledger_to_MultiNotify" sourceRef="ServiceTask_UpdateLedger" targetRef="ServiceTask_MultiNotify" />
+    <boundaryEvent id="BoundaryEvent_CompensateLedger" name="Compensate&#10;Ledger" attachedToRef="ServiceTask_UpdateLedger">
+      <compensateEventDefinition />
+    </boundaryEvent>
+    <serviceTask id="ServiceTask_ReverseLedger" name="Reverse Ledger&#10;Entry" isForCompensation="true" camunda:type="external" camunda:topic="reverse-ledger">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R5/PT30S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <serviceTask id="ServiceTask_MultiNotify" name="Send Notifications" camunda:type="external" camunda:topic="send-notification">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R3/PT30S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+      <multiInstanceLoopCharacteristics camunda:collection="${notificationChannels}" camunda:elementVariable="channel">
+        <completionCondition xsi:type="tFormalExpression">${nrOfCompletedInstances &gt;= 1}</completionCondition>
+      </multiInstanceLoopCharacteristics>
+    </serviceTask>
+    <sequenceFlow id="Flow_MultiNotify_to_Audit" sourceRef="ServiceTask_MultiNotify" targetRef="ServiceTask_PublishAuditEvent" />
+    <serviceTask id="ServiceTask_PublishAuditEvent" name="Publish Audit&#10;Event" camunda:type="external" camunda:topic="publish-audit">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R5/PT10S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_Audit_to_EndCompleted" sourceRef="ServiceTask_PublishAuditEvent" targetRef="EndEvent_PaymentCompleted" />
+    <intermediateThrowEvent id="IntermediateThrowEvent_Compensate" name="Trigger&#10;Compensation">
+      <compensateEventDefinition />
+    </intermediateThrowEvent>
+    <sequenceFlow id="Flow_Compensate_to_NotifyFailed" sourceRef="IntermediateThrowEvent_Compensate" targetRef="ServiceTask_NotifyFailed" />
+    <serviceTask id="ServiceTask_NotifyFailed" name="Notify Payment&#10;Failed" camunda:type="external" camunda:topic="notify-payment-failed">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R3/PT30S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_NotifyFailed_to_AuditFailed" sourceRef="ServiceTask_NotifyFailed" targetRef="ServiceTask_PublishFailedAudit" />
+    <serviceTask id="ServiceTask_PublishFailedAudit" name="Publish Failed&#10;Audit" camunda:type="external" camunda:topic="publish-audit-failed">
+      <extensionElements>
+        <camunda:failedJobRetryTimeCycle>R3/PT30S</camunda:failedJobRetryTimeCycle>
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="Flow_FailedAudit_to_EndFailed" sourceRef="ServiceTask_PublishFailedAudit" targetRef="EndEvent_PaymentFailed" />
+    <endEvent id="EndEvent_PaymentCompleted" name="Payment&#10;Completed">
+      <extensionElements>
+        <camunda:executionListener class="vn.payment.listeners.PaymentCompletedListener" event="start" />
+      </extensionElements>
+    </endEvent>
+    <endEvent id="EndEvent_PaymentFailed" name="Payment&#10;Failed">
+      <errorEventDefinition errorRef="Error_PaymentFailed" />
+    </endEvent>
+    <endEvent id="EndEvent_PaymentBlocked" name="Payment&#10;Blocked">
+      <errorEventDefinition errorRef="Error_PaymentBlocked" />
+    </endEvent>
+    <endEvent id="EndEvent_PaymentRejected" name="Payment&#10;Rejected">
+      <errorEventDefinition errorRef="Error_PaymentRejected" />
+    </endEvent>
+    <endEvent id="EndEvent_InsufficientFunds" name="Insufficient&#10;Funds">
+      <errorEventDefinition errorRef="Error_InsufficientFunds" />
+    </endEvent>
+    <endEvent id="EndEvent_Escalated" name="Review&#10;Escalated" />
+    <subProcess id="EventSubProcess_Cancellation" name="Handle Cancellation" triggeredByEvent="true">
+      <extensionElements>
+        <camunda:executionListener class="vn.payment.listeners.CancellationListener" event="start" />
+      </extensionElements>
+      <startEvent id="StartEvent_CancelSignal" name="Cancel Signal&#10;Received">
+        <signalEventDefinition signalRef="Signal_CancelPayment" />
+      </startEvent>
+      <sequenceFlow id="Flow_CancelSignal_to_Check" sourceRef="StartEvent_CancelSignal" targetRef="ServiceTask_CheckCancellable" />
+      <serviceTask id="ServiceTask_CheckCancellable" name="Check if&#10;Cancellable" camunda:type="external" camunda:topic="check-cancellable">
+        <extensionElements>
+          <camunda:failedJobRetryTimeCycle>R2/PT10S</camunda:failedJobRetryTimeCycle>
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="Flow_CheckCancellable_to_GW" sourceRef="ServiceTask_CheckCancellable" targetRef="GW_CanCancel" />
+      <exclusiveGateway id="GW_CanCancel" name="Can&#10;Cancel?" />
+      <sequenceFlow id="Flow_CanCancel_Yes" name="Yes" sourceRef="GW_CanCancel" targetRef="ServiceTask_CancelPayment">
+        <conditionExpression xsi:type="tFormalExpression">${canCancel == true}</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="Flow_CanCancel_No" name="No" sourceRef="GW_CanCancel" targetRef="ServiceTask_NotifyCancelFailed">
+        <conditionExpression xsi:type="tFormalExpression">${canCancel == false}</conditionExpression>
+      </sequenceFlow>
+      <serviceTask id="ServiceTask_CancelPayment" name="Execute&#10;Cancellation" camunda:type="external" camunda:topic="cancel-payment">
+        <extensionElements>
+          <camunda:failedJobRetryTimeCycle>R3/PT30S</camunda:failedJobRetryTimeCycle>
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="Flow_CancelSuccess_to_End" sourceRef="ServiceTask_CancelPayment" targetRef="EndEvent_Cancelled" />
+      <serviceTask id="ServiceTask_NotifyCancelFailed" name="Notify Cannot&#10;Cancel" camunda:type="external" camunda:topic="notify-cancel-failed" />
+      <sequenceFlow id="Flow_CancelFailed_to_End" sourceRef="ServiceTask_NotifyCancelFailed" targetRef="EndEvent_CancelFailed" />
+      <endEvent id="EndEvent_Cancelled" name="Payment&#10;Cancelled">
+        <errorEventDefinition errorRef="Error_PaymentCancelled" />
+      </endEvent>
+      <endEvent id="EndEvent_CancelFailed" name="Cancel&#10;Failed" />
+    </subProcess>
+    <subProcess id="SubProcess_ServiceTask_AMLCheck" name="Sub process ServiceTask_AMLCheck">
+      <incoming>Flow_0ie3ir4</incoming>
+      <outgoing>Flow_0c8v0iz</outgoing>
+      <serviceTask id="ServiceTask_AMLCheck" name="AML Screening" camunda:type="external" camunda:topic="aml-screening">
+        <extensionElements>
+          <camunda:failedJobRetryTimeCycle>R3/PT30S</camunda:failedJobRetryTimeCycle>
+        </extensionElements>
+        <incoming>Flow_0wiw1b9</incoming>
+        <outgoing>Flow_1ys1pe2</outgoing>
+      </serviceTask>
+      <startEvent id="Event_11h55o9">
+        <outgoing>Flow_0wiw1b9</outgoing>
+      </startEvent>
+      <sequenceFlow id="Flow_0wiw1b9" sourceRef="Event_11h55o9" targetRef="ServiceTask_AMLCheck" />
+      <endEvent id="Event_1mcfi5a">
+        <incoming>Flow_1ys1pe2</incoming>
+      </endEvent>
+      <sequenceFlow id="Flow_1ys1pe2" sourceRef="ServiceTask_AMLCheck" targetRef="Event_1mcfi5a" />
+    </subProcess>
+    <sequenceFlow id="Flow_0ie3ir4" sourceRef="GW_ParallelFork" targetRef="SubProcess_ServiceTask_AMLCheck" />
+    <sequenceFlow id="Flow_0c8v0iz" sourceRef="SubProcess_ServiceTask_AMLCheck" targetRef="GW_ParallelJoin" />
+    <association id="Assoc_Compensate_Reserve" associationDirection="One" sourceRef="BoundaryEvent_CompensateReserve" targetRef="ServiceTask_ReleaseReserve" />
+    <association id="Assoc_Compensate_Charge" associationDirection="One" sourceRef="BoundaryEvent_CompensateCharge" targetRef="ServiceTask_RefundCharge" />
+    <association id="Assoc_Compensate_Ledger" associationDirection="One" sourceRef="BoundaryEvent_CompensateLedger" targetRef="ServiceTask_ReverseLedger" />
+  </process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="payment-process">
+      <bpmndi:BPMNShape id="Shape_StartEvent" bpmnElement="StartEvent_PaymentReceived">
+        <dc:Bounds x="152" y="292" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="147" y="335" width="46" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ScriptInit" bpmnElement="ScriptTask_InitVars">
+        <dc:Bounds x="250" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BRisk" bpmnElement="BusinessRuleTask_RiskAssessment">
+        <dc:Bounds x="410" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UnpackRisk" bpmnElement="ScriptTask_UnpackRisk">
+        <dc:Bounds x="570" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_GW_Risk" bpmnElement="GW_RiskLevel" isMarkerVisible="true">
+        <dc:Bounds x="735" y="285" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="732" y="342" width="57" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Block" bpmnElement="ServiceTask_BlockPayment">
+        <dc:Bounds x="860" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ManualReview" bpmnElement="UserTask_ManualReview">
+        <dc:Bounds x="860" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EscalateReview" bpmnElement="ServiceTask_EscalateReview">
+        <dc:Bounds x="860" y="540" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Reserve" bpmnElement="ServiceTask_ReserveBalance">
+        <dc:Bounds x="1100" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ReleaseReserve" bpmnElement="ServiceTask_ReleaseReserve">
+        <dc:Bounds x="1080" y="440" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_NotifyInsufficient" bpmnElement="ServiceTask_NotifyInsufficient">
+        <dc:Bounds x="1210" y="440" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ParFork" bpmnElement="GW_ParallelFork">
+        <dc:Bounds x="1265" y="285" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1325" y="303" width="22" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Charge" bpmnElement="ServiceTask_ChargeGateway">
+        <dc:Bounds x="1390" y="210" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_RefundCharge" bpmnElement="ServiceTask_RefundCharge">
+        <dc:Bounds x="1370" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ComplianceReview" bpmnElement="UserTask_ComplianceReview">
+        <dc:Bounds x="1410" y="540" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ParJoin" bpmnElement="GW_ParallelJoin">
+        <dc:Bounds x="1565" y="285" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1533.5" y="303" width="21" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EventGW" bpmnElement="GW_EventBased">
+        <dc:Bounds x="1685" y="285" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1679" y="342" width="63" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Callback" bpmnElement="IntermediateCatchEvent_GatewayCallback">
+        <dc:Bounds x="1812" y="242" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1808" y="285" width="44" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Timeout" bpmnElement="IntermediateCatchEvent_ConfirmTimeout">
+        <dc:Bounds x="1812" y="382" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1810" y="425" width="40" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_CheckPending" bpmnElement="ServiceTask_CheckPendingStatus">
+        <dc:Bounds x="1910" y="360" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_StatusGW" bpmnElement="GW_PaymentStatus" isMarkerVisible="true">
+        <dc:Bounds x="2075" y="285" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2078" y="342" width="44" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Reconciliation" bpmnElement="UserTask_ManualReconciliation">
+        <dc:Bounds x="2050" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Ledger" bpmnElement="ServiceTask_UpdateLedger">
+        <dc:Bounds x="2200" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ReverseLedger" bpmnElement="ServiceTask_ReverseLedger">
+        <dc:Bounds x="2240" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_MultiNotify" bpmnElement="ServiceTask_MultiNotify">
+        <dc:Bounds x="2370" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Audit" bpmnElement="ServiceTask_PublishAuditEvent">
+        <dc:Bounds x="2540" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_CompThrow" bpmnElement="IntermediateThrowEvent_Compensate">
+        <dc:Bounds x="2075" y="592" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2058" y="635" width="71" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_NotifyFailed" bpmnElement="ServiceTask_NotifyFailed">
+        <dc:Bounds x="2200" y="570" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_FailedAudit" bpmnElement="ServiceTask_PublishFailedAudit">
+        <dc:Bounds x="2370" y="570" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndCompleted" bpmnElement="EndEvent_PaymentCompleted">
+        <dc:Bounds x="2712" y="292" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2703" y="335" width="54" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndFailed" bpmnElement="EndEvent_PaymentFailed">
+        <dc:Bounds x="2542" y="592" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2538" y="635" width="44" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndBlocked" bpmnElement="EndEvent_PaymentBlocked">
+        <dc:Bounds x="1022" y="192" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1018" y="235" width="44" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndRejected" bpmnElement="EndEvent_PaymentRejected">
+        <dc:Bounds x="1022" y="452" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1018" y="495" width="44" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndInsufficient" bpmnElement="EndEvent_InsufficientFunds">
+        <dc:Bounds x="1242" y="552" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1233" y="598" width="53" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEscalated" bpmnElement="EndEvent_Escalated">
+        <dc:Bounds x="1022" y="562" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1016" y="605" width="49" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EventSubProc" bpmnElement="EventSubProcess_Cancellation" isExpanded="true">
+        <dc:Bounds x="152" y="690" width="760" height="200" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="390" y="694" width="120" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_CancelSignal" bpmnElement="StartEvent_CancelSignal">
+        <dc:Bounds x="202" y="771" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="186" y="814" width="68" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_CheckCancellable" bpmnElement="ServiceTask_CheckCancellable">
+        <dc:Bounds x="300" y="749" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_GW_CanCancel" bpmnElement="GW_CanCancel" isMarkerVisible="true">
+        <dc:Bounds x="465" y="764" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="470" y="821" width="41" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_CancelPayment" bpmnElement="ServiceTask_CancelPayment">
+        <dc:Bounds x="570" y="739" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_NotifyCancelFailed" bpmnElement="ServiceTask_NotifyCancelFailed">
+        <dc:Bounds x="570" y="829" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndCancelled" bpmnElement="EndEvent_Cancelled">
+        <dc:Bounds x="732" y="761" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="726" y="804" width="49" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndCancelFailed" bpmnElement="EndEvent_CancelFailed">
+        <dc:Bounds x="732" y="851" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="733" y="894" width="35" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_CancelSignal_to_Check" bpmnElement="Flow_CancelSignal_to_Check">
+        <di:waypoint x="238" y="789" />
+        <di:waypoint x="300" y="789" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Check_to_GWCancel" bpmnElement="Flow_CheckCancellable_to_GW">
+        <di:waypoint x="400" y="789" />
+        <di:waypoint x="465" y="789" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_CanCancel_Yes" bpmnElement="Flow_CanCancel_Yes">
+        <di:waypoint x="515" y="789" />
+        <di:waypoint x="570" y="779" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="532" y="771" width="18" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_CanCancel_No" bpmnElement="Flow_CanCancel_No">
+        <di:waypoint x="490" y="814" />
+        <di:waypoint x="490" y="869" />
+        <di:waypoint x="570" y="869" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="498" y="835" width="15" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_CancelPayment_to_End" bpmnElement="Flow_CancelSuccess_to_End">
+        <di:waypoint x="670" y="779" />
+        <di:waypoint x="732" y="779" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_NotifyCancel_to_End" bpmnElement="Flow_CancelFailed_to_End">
+        <di:waypoint x="670" y="869" />
+        <di:waypoint x="732" y="869" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Activity_1gbquap_di" bpmnElement="SubProcess_ServiceTask_AMLCheck" isExpanded="true">
+        <dc:Bounds x="1320" y="350" width="340" height="140" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_04azx1k_di" bpmnElement="Event_11h55o9">
+        <dc:Bounds x="1342" y="412" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_AML" bpmnElement="ServiceTask_AMLCheck">
+        <dc:Bounds x="1430" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1mcfi5a_di" bpmnElement="Event_1mcfi5a">
+        <dc:Bounds x="1582" y="412" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_0wiw1b9_di" bpmnElement="Flow_0wiw1b9">
+        <di:waypoint x="1378" y="430" />
+        <di:waypoint x="1430" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1ys1pe2_di" bpmnElement="Flow_1ys1pe2">
+        <di:waypoint x="1530" y="430" />
+        <di:waypoint x="1582" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Shape_BoundCompLedger" bpmnElement="BoundaryEvent_CompensateLedger">
+        <dc:Bounds x="2262" y="332" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2249" y="375" width="63" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BoundGatewayErr" bpmnElement="BoundaryEvent_GatewayError">
+        <dc:Bounds x="1452" y="272" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1434" y="315" width="72" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BoundCompCharge" bpmnElement="BoundaryEvent_CompensateCharge">
+        <dc:Bounds x="1402" y="272" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1389" y="315" width="63" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BoundReserveErr" bpmnElement="BoundaryEvent_ReserveError">
+        <dc:Bounds x="1152" y="332" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1144" y="375" width="53" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BoundCompReserve" bpmnElement="BoundaryEvent_CompensateReserve">
+        <dc:Bounds x="1112" y="332" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1099" y="375" width="63" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BoundRejected" bpmnElement="BoundaryEvent_ReviewRejected">
+        <dc:Bounds x="922" y="452" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="899" y="495" width="83" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BoundSLA" bpmnElement="BoundaryEvent_ReviewSLA">
+        <dc:Bounds x="882" y="452" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="872" y="495" width="37" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Start_to_Init" bpmnElement="Flow_Start_to_Init">
+        <di:waypoint x="188" y="310" />
+        <di:waypoint x="250" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Init_to_Risk" bpmnElement="Flow_Init_to_Risk">
+        <di:waypoint x="350" y="310" />
+        <di:waypoint x="410" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Risk_to_Unpack" bpmnElement="Flow_Risk_to_UnpackDMN">
+        <di:waypoint x="510" y="310" />
+        <di:waypoint x="570" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_UnpackRisk_to_GW" bpmnElement="Flow_UnpackRisk_to_GW">
+        <di:waypoint x="670" y="310" />
+        <di:waypoint x="735" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_GW_to_Block" bpmnElement="Flow_GW_to_Block">
+        <di:waypoint x="760" y="285" />
+        <di:waypoint x="760" y="210" />
+        <di:waypoint x="860" y="210" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="769" y="240" width="51" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_GW_to_ManualReview" bpmnElement="Flow_GW_to_ManualReview">
+        <di:waypoint x="760" y="335" />
+        <di:waypoint x="760" y="430" />
+        <di:waypoint x="860" y="430" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="769" y="376" width="28" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_GW_to_Reserve" bpmnElement="Flow_GW_to_ReserveBalance">
+        <di:waypoint x="785" y="310" />
+        <di:waypoint x="1100" y="310" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="881" y="292" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Block_to_End" bpmnElement="Flow_Block_to_End">
+        <di:waypoint x="960" y="210" />
+        <di:waypoint x="1022" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ManualReview_to_Reserve" bpmnElement="Flow_ManualReview_to_Reserve">
+        <di:waypoint x="960" y="430" />
+        <di:waypoint x="1030" y="430" />
+        <di:waypoint x="1030" y="310" />
+        <di:waypoint x="1100" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_SLA_to_Escalate" bpmnElement="Flow_SLA_to_Escalate">
+        <di:waypoint x="900" y="488" />
+        <di:waypoint x="900" y="540" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Escalate_to_End" bpmnElement="Flow_Escalate_to_EndEsc">
+        <di:waypoint x="960" y="580" />
+        <di:waypoint x="1022" y="580" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Rejected_to_End" bpmnElement="Flow_Rejected_to_End">
+        <di:waypoint x="958" y="470" />
+        <di:waypoint x="1022" y="470" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Reserve_to_Fork" bpmnElement="Flow_Reserve_to_ParallelFork">
+        <di:waypoint x="1200" y="310" />
+        <di:waypoint x="1265" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ReserveErr_to_Notify" bpmnElement="Flow_ReserveError_to_Notify">
+        <di:waypoint x="1170" y="368" />
+        <di:waypoint x="1170" y="420" />
+        <di:waypoint x="1260" y="420" />
+        <di:waypoint x="1260" y="440" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_NotifyInsuff_to_End" bpmnElement="Flow_NotifyInsufficient_to_End">
+        <di:waypoint x="1260" y="520" />
+        <di:waypoint x="1260" y="552" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Fork_to_Charge" bpmnElement="Flow_Fork_to_Charge">
+        <di:waypoint x="1290" y="285" />
+        <di:waypoint x="1290" y="250" />
+        <di:waypoint x="1390" y="250" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Charge_to_Join" bpmnElement="Flow_Charge_to_Join">
+        <di:waypoint x="1490" y="250" />
+        <di:waypoint x="1590" y="250" />
+        <di:waypoint x="1590" y="285" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_GatewayErr_to_Comp" bpmnElement="Flow_GatewayError_to_Compensate">
+        <di:waypoint x="1480" y="305" />
+        <di:waypoint x="1480" y="610" />
+        <di:waypoint x="2075" y="610" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Compliance_to_Join" bpmnElement="Flow_ComplianceReview_to_Join">
+        <di:waypoint x="1510" y="580" />
+        <di:waypoint x="1590" y="580" />
+        <di:waypoint x="1590" y="335" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Join_to_EventGW" bpmnElement="Flow_Join_to_EventGW">
+        <di:waypoint x="1615" y="310" />
+        <di:waypoint x="1685" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_EventGW_to_Callback" bpmnElement="Flow_EventGW_to_Callback">
+        <di:waypoint x="1710" y="285" />
+        <di:waypoint x="1710" y="260" />
+        <di:waypoint x="1812" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_EventGW_to_Timeout" bpmnElement="Flow_EventGW_to_Timeout">
+        <di:waypoint x="1710" y="335" />
+        <di:waypoint x="1710" y="400" />
+        <di:waypoint x="1812" y="400" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Callback_to_StatusGW" bpmnElement="Flow_Callback_to_StatusGW">
+        <di:waypoint x="1848" y="260" />
+        <di:waypoint x="2100" y="260" />
+        <di:waypoint x="2100" y="285" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Timeout_to_CheckPending" bpmnElement="Flow_Timeout_to_PendingCheck">
+        <di:waypoint x="1848" y="400" />
+        <di:waypoint x="1910" y="400" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_PendingCheck_to_StatusGW" bpmnElement="Flow_PendingCheck_to_StatusGW">
+        <di:waypoint x="2010" y="400" />
+        <di:waypoint x="2100" y="400" />
+        <di:waypoint x="2100" y="335" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Status_Success" bpmnElement="Flow_Status_Success">
+        <di:waypoint x="2125" y="310" />
+        <di:waypoint x="2200" y="310" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2140" y="292" width="54" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Status_Failed" bpmnElement="Flow_Status_Failed">
+        <di:waypoint x="2100" y="335" />
+        <di:waypoint x="2100" y="610" />
+        <di:waypoint x="2075" y="610" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2107" y="465" width="38" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Status_Pending" bpmnElement="Flow_Status_Pending">
+        <di:waypoint x="2100" y="335" />
+        <di:waypoint x="2100" y="490" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2105" y="400" width="51" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Reconcile_to_StatusGW" bpmnElement="Flow_Reconciliation_to_StatusGW">
+        <di:waypoint x="2150" y="490" />
+        <di:waypoint x="2175" y="490" />
+        <di:waypoint x="2175" y="470" />
+        <di:waypoint x="2125" y="470" />
+        <di:waypoint x="2125" y="335" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Ledger_to_Notify" bpmnElement="Flow_Ledger_to_MultiNotify">
+        <di:waypoint x="2300" y="310" />
+        <di:waypoint x="2370" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_MultiNotify_to_Audit" bpmnElement="Flow_MultiNotify_to_Audit">
+        <di:waypoint x="2470" y="310" />
+        <di:waypoint x="2540" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Audit_to_End" bpmnElement="Flow_Audit_to_EndCompleted">
+        <di:waypoint x="2640" y="310" />
+        <di:waypoint x="2712" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Compensate_to_NotifyFailed" bpmnElement="Flow_Compensate_to_NotifyFailed">
+        <di:waypoint x="2111" y="610" />
+        <di:waypoint x="2200" y="610" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_NotifyFailed_to_Audit" bpmnElement="Flow_NotifyFailed_to_AuditFailed">
+        <di:waypoint x="2300" y="610" />
+        <di:waypoint x="2370" y="610" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_FailedAudit_to_End" bpmnElement="Flow_FailedAudit_to_EndFailed">
+        <di:waypoint x="2470" y="610" />
+        <di:waypoint x="2542" y="610" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0ie3ir4_di" bpmnElement="Flow_0ie3ir4">
+        <di:waypoint x="1290" y="335" />
+        <di:waypoint x="1290" y="400" />
+        <di:waypoint x="1320" y="400" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0c8v0iz_di" bpmnElement="Flow_0c8v0iz">
+        <di:waypoint x="1590" y="350" />
+        <di:waypoint x="1590" y="335" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Assoc_CompReserve" bpmnElement="Assoc_Compensate_Reserve">
+        <di:waypoint x="1130" y="368" />
+        <di:waypoint x="1130" y="440" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Assoc_CompCharge" bpmnElement="Assoc_Compensate_Charge">
+        <di:waypoint x="1420" y="272" />
+        <di:waypoint x="1420" y="230" />
+        <di:waypoint x="1370" y="230" />
+        <di:waypoint x="1370" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Assoc_CompLedger" bpmnElement="Assoc_Compensate_Ledger">
+        <di:waypoint x="2280" y="368" />
+        <di:waypoint x="2280" y="450" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>
